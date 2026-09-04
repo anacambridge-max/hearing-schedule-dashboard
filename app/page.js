@@ -1,0 +1,53 @@
+'use client';
+
+import { useEffect, useMemo, useState } from 'react';
+import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, PieChart, Pie, Cell, LineChart, Line } from 'recharts';
+
+const SHEET_ID = '1KRfUfvw0JmbNBolkVDHyevutOv8nd3JYPgngT5xchFI';
+const TABS = ['Rough Data', 'For Hearing Entry', 'Centre Wise Report', 'Hearing Schedule Report', 'Date wise Report'];
+const money = (n) => Number(n || 0).toLocaleString('en-IN');
+const clean = (v) => (v == null ? '' : String(v).trim());
+const num = (v) => { const n = parseFloat(String(v ?? '').replace(/,/g, '')); return Number.isFinite(n) ? n : 0; };
+
+function parseGviz(text) {
+  const start = text.indexOf('{'), end = text.lastIndexOf('}');
+  if (start < 0 || end < 0) throw new Error('Invalid Google Sheets response');
+  const obj = JSON.parse(text.slice(start, end + 1));
+  const cols = obj.table.cols.map((c, i) => c.label || `Column ${i + 1}`);
+  return { cols, rows: obj.table.rows.map(r => Object.fromEntries(cols.map((c, i) => [c, r.c?.[i]?.v ?? '']))) };
+}
+async function getTab(tab) {
+  const r = await fetch(`/api/sheet?tab=${encodeURIComponent(tab)}`, { cache: 'no-store' });
+  if (!r.ok) throw new Error(await r.text());
+  return parseGviz(await r.text());
+}
+function Card({ label, value, sub }) { return <div className="card"><div className="card-label">{label}</div><div className="card-value">{value}</div><div className="card-sub">{sub}</div></div>; }
+
+export default function Page() {
+  const [data, setData] = useState({}), [error, setError] = useState(''), [loading, setLoading] = useState(true), [lastUpdated, setLastUpdated] = useState(null), [centre, setCentre] = useState('All Centres'), [date, setDate] = useState('All Dates'), [view, setView] = useState('overview');
+  async function refresh() { setLoading(true); setError(''); try { const r = await Promise.all(TABS.map(async t => [t, await getTab(t)])); setData(Object.fromEntries(r)); setLastUpdated(new Date()); } catch (e) { setError(e.message || 'Unable to load Google Sheet'); } finally { setLoading(false); } }
+  useEffect(() => { refresh(); const id = setInterval(refresh, 60000); return () => clearInterval(id); }, []);
+
+  const entry = data['For Hearing Entry']?.rows || [], centres = data['Centre Wise Report']?.rows || [], schedule = data['Hearing Schedule Report']?.rows || [];
+  const validEntry = useMemo(() => entry.filter(r => clean(r['New P.S. No.']) && !['Hearing Centre','New P.S. No.'].includes(clean(r['New P.S. No.']))), [entry]);
+  const centreOptions = useMemo(() => [...new Set(validEntry.map(r => clean(r['Hearing Centre'])).filter(Boolean))].sort(), [validEntry]);
+  const dateOptions = useMemo(() => [...new Set(validEntry.flatMap(r => ['Date 1','Date 2','Date 3','Date 4','Date 5','Date 6','Date 7'].map(k => clean(r[k])).filter(v => v && !v.startsWith('Date '))))], [validEntry]);
+  const filtered = useMemo(() => validEntry.filter(r => (centre === 'All Centres' || clean(r['Hearing Centre']) === centre) && (date === 'All Dates' || ['Date 1','Date 2','Date 3','Date 4','Date 5','Date 6','Date 7'].some(k => clean(r[k]) === date))), [validEntry, centre, date]);
+  const totals = useMemo(() => ({ anomaly: filtered.reduce((a,r)=>a+num(r['Total Anamoly/Discripancy']),0), mapping: filtered.reduce((a,r)=>a+num(r['Total No Mapping']),0), grand: filtered.reduce((a,r)=>a+num(r['Grand Total']),0), balance: filtered.reduce((a,r)=>a+num(r['Balance No. of Notices']),0) }), [filtered]);
+  const centreChart = useMemo(() => centres.filter(r => clean(r['Hearing Centre']) && clean(r['Hearing Centre']) !== 'Hearing Centre').map(r => ({ name: clean(r['Hearing Centre']), notices: num(r['Total Notice Scheduled']), days: num(r['Total Days Scheduled']), ps: num(r['No. of P.S. under Hearing Centre']) })).sort((a,b)=>b.notices-a.notices), [centres]);
+  const scheduleChart = useMemo(() => schedule.filter(r => clean(r['Date']) && num(r['Total Hearing Scheduled']) > 0).map(r => ({ date: clean(r['Date']), scheduled: num(r['Total Hearing Scheduled']) })), [schedule]);
+  const topBLO = useMemo(() => { const m = {}; filtered.forEach(r => { const b = clean(r['All BLO Name']); if (b) m[b] = (m[b] || 0) + num(r['Grand Total']); }); return Object.entries(m).map(([name,total])=>({name,total})).sort((a,b)=>b.total-a.total).slice(0,10); }, [filtered]);
+
+  return <main>
+    <header className="topbar"><div><div className="eyebrow">ELECTORAL HEARING MANAGEMENT</div><h1>Hearing Schedule Dashboard</h1><p>Live operational view of workload, centres, hearing dates and BLO allocation.</p></div><div className="actions"><span className={`status ${loading?'loading':''}`}><i/> {loading?'Refreshing':'Live'}</span><button onClick={refresh}>↻ Refresh</button><a href={`https://docs.google.com/spreadsheets/d/${SHEET_ID}/edit`} target="_blank" rel="noreferrer">Open Sheet ↗</a></div></header>
+    {error && <div className="error">Could not load live data: {error}<br/><small>Confirm the sheet remains shared as Anyone with the link → Viewer.</small></div>}
+    <section className="filters"><div><label>Hearing Centre</label><select value={centre} onChange={e=>setCentre(e.target.value)}><option>All Centres</option>{centreOptions.map(x=><option key={x}>{x}</option>)}</select></div><div><label>Hearing Date</label><select value={date} onChange={e=>setDate(e.target.value)}><option>All Dates</option>{dateOptions.map(x=><option key={x}>{x}</option>)}</select></div><div className="refresh-note">Auto refresh: every 60 seconds<br/>{lastUpdated?`Last synced ${lastUpdated.toLocaleTimeString()}`:'Waiting for first sync'}</div></section>
+    <nav className="tabs">{[['overview','Overview'],['centres','Centre Performance'],['schedule','Schedule'],['detail','P.S. / BLO Detail']].map(([id,label])=><button key={id} className={view===id?'active':''} onClick={()=>setView(id)}>{label}</button>)}</nav>
+    <section className="cards"><Card label="P.S. Records" value={money(filtered.length)} sub={centre==='All Centres'?'All centres':centre}/><Card label="Anomaly / Discrepancy" value={money(totals.anomaly)} sub="Identified workload"/><Card label="No Mapping" value={money(totals.mapping)} sub="Mapping workload"/><Card label="Grand Total" value={money(totals.grand)} sub="Combined workload"/><Card label="Balance Notices" value={money(totals.balance)} sub="Current balance"/><Card label="Hearing Centres" value={centreOptions.length} sub="Active centres"/></section>
+    {view==='overview' && <div className="grid"><section className="panel wide"><div className="panel-head"><h2>Scheduled Hearings by Centre</h2><span>Current sheet totals</span></div><ResponsiveContainer width="100%" height={340}><BarChart data={centreChart} margin={{top:10,right:20,left:10,bottom:90}}><CartesianGrid strokeDasharray="3 3"/><XAxis dataKey="name" angle={-35} textAnchor="end" interval={0} height={110}/><YAxis/><Tooltip/><Bar dataKey="notices" name="Notices Scheduled" fill="#3157d5" radius={[6,6,0,0]}/></BarChart></ResponsiveContainer></section><section className="panel"><div className="panel-head"><h2>Workload Mix</h2><span>Filtered P.S.</span></div><ResponsiveContainer width="100%" height={280}><PieChart><Pie data={[{name:'Anomaly / Discrepancy',value:totals.anomaly},{name:'No Mapping',value:totals.mapping}]} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={95} label>{[0,1].map(i=><Cell key={i} fill={i===0?'#3157d5':'#8aa0e8'}/>)}</Pie><Tooltip/></PieChart></ResponsiveContainer></section><section className="panel"><div className="panel-head"><h2>Top BLO Workload</h2><span>Grand total</span></div><div className="rank">{topBLO.map((x,i)=><div className="rank-row" key={x.name}><b>{i+1}</b><span>{x.name}</span><strong>{money(x.total)}</strong></div>)}</div></section></div>}
+    {view==='centres' && <section className="panel"><div className="panel-head"><h2>Centre Performance</h2><span>{centreChart.length} centres</span></div><ResponsiveContainer width="100%" height={380}><BarChart data={centreChart} margin={{top:10,right:20,left:10,bottom:90}}><CartesianGrid strokeDasharray="3 3"/><XAxis dataKey="name" angle={-35} textAnchor="end" interval={0} height={110}/><YAxis/><Tooltip/><Legend/><Bar dataKey="ps" name="P.S." fill="#8aa0e8"/><Bar dataKey="notices" name="Notices" fill="#3157d5"/></BarChart></ResponsiveContainer><div className="table-wrap"><table><thead><tr><th>Centre</th><th>P.S.</th><th>Days</th><th>Notices Scheduled</th></tr></thead><tbody>{centreChart.map(x=><tr key={x.name}><td>{x.name}</td><td>{money(x.ps)}</td><td>{money(x.days)}</td><td><b>{money(x.notices)}</b></td></tr>)}</tbody></table></div></section>}
+    {view==='schedule' && <div className="grid"><section className="panel wide"><div className="panel-head"><h2>Daily Hearing Schedule</h2><span>Scheduled dates</span></div><ResponsiveContainer width="100%" height={350}><LineChart data={scheduleChart}><CartesianGrid strokeDasharray="3 3"/><XAxis dataKey="date"/><YAxis/><Tooltip/><Line type="monotone" dataKey="scheduled" name="Hearings" stroke="#3157d5" strokeWidth={3}/></LineChart></ResponsiveContainer></section><section className="panel"><div className="panel-head"><h2>Schedule Snapshot</h2><span>Report tab</span></div><div className="schedule-list">{schedule.filter(r=>num(r['Total Hearing Scheduled'])>0).map(r=><div className="schedule-row" key={r['Date']}><span>{r['Date']}</span><strong>{money(num(r['Total Hearing Scheduled']))}</strong></div>)}</div></section></div>}
+    {view==='detail' && <section className="panel"><div className="panel-head"><h2>P.S. / BLO Detail</h2><span>{filtered.length} records</span></div><div className="table-wrap tall"><table><thead><tr><th>P.S.</th><th>Locality</th><th>BLO</th><th>Supervisor</th><th>Anomaly</th><th>Mapping</th><th>Grand Total</th><th>Balance Notices</th></tr></thead><tbody>{filtered.map((r,i)=><tr key={i}><td><b>{clean(r['New P.S. No.'])}</b></td><td>{clean(r['LOCALITY'])}</td><td>{clean(r['All BLO Name'])}</td><td>{clean(r['Supervisor Name'])}</td><td>{money(r['Total Anamoly/Discripancy'])}</td><td>{money(r['Total No Mapping'])}</td><td><b>{money(r['Grand Total'])}</b></td><td>{money(r['Balance No. of Notices'])}</td></tr>)}</tbody></table></div></section>}
+    <footer>Source: Google Sheet • 5 source tabs • Auto-sync every 60 seconds</footer>
+  </main>;
+}
