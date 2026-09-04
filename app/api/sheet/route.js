@@ -40,7 +40,7 @@ const EXPECTED = {
 function findHeaderIndex(rows, tab) {
   const wanted = EXPECTED[tab] || [];
   let best = 0, bestScore = -1;
-  for (let i = 0; i < Math.min(rows.length, 20); i++) {
+  for (let i = 0; i < Math.min(rows.length, 30); i++) {
     const cells = rows[i].map(norm).filter(Boolean);
     if (!cells.length) continue;
     let score = 0;
@@ -65,8 +65,14 @@ function makeUniqueHeaders(headers) {
 }
 
 function isPS(value) {
-  const n = Number(String(value ?? "").trim());
+  const n = Number(String(value ?? "").trim().replace(/,/g, ""));
   return Number.isInteger(n) && n >= 1 && n <= 430;
+}
+
+function objectFromRow(cols, row) {
+  const obj = {};
+  cols.forEach((c, i) => { obj[c] = String(row[i] ?? "").replace(/^\uFEFF/, "").trim(); });
+  return obj;
 }
 
 export async function GET(req) {
@@ -83,25 +89,22 @@ export async function GET(req) {
 
     const headerIndex = findHeaderIndex(rows, tab);
     const cols = makeUniqueHeaders(rows[headerIndex]);
-    let data;
+    const normalizedCols = cols.map(norm);
+    const psIndex = normalizedCols.findIndex(x => x === "new p s no" || x.includes("new p s no"));
+
+    let data = rows.slice(headerIndex + 1).map(r => objectFromRow(cols, r));
 
     if (tab === "For Hearing Entry") {
-      // This tab contains repeated header blocks for different hearing centres.
-      // Use the first real header definition and collect every row whose New P.S. No. is 1..430.
-      data = rows.slice(headerIndex + 1).filter(r => isPS(r[2])).map(r => {
-        const obj = {};
-        cols.forEach((c, i) => { obj[c] = String(r[i] ?? "").replace(/^\uFEFF/, "").trim(); });
-        return obj;
-      });
-    } else {
-      data = rows.slice(headerIndex + 1).map(r => {
-        const obj = {};
-        cols.forEach((c, i) => { obj[c] = String(r[i] ?? "").replace(/^\uFEFF/, "").trim(); });
-        return obj;
-      });
+      // Google Sheets CSV can shift leading empty cells between exports. Never assume a fixed PS column.
+      data = rows.slice(headerIndex + 1)
+        .filter(r => psIndex >= 0 && isPS(r[psIndex]))
+        .map(r => objectFromRow(cols, r));
     }
 
-    return NextResponse.json({ cols, rows: data, headerIndex, count: data.length }, { headers: { "Cache-Control": "no-store, max-age=0" } });
+    return NextResponse.json(
+      { cols, rows: data, headerIndex, count: data.length, psIndex },
+      { headers: { "Cache-Control": "no-store, max-age=0" } }
+    );
   } catch (e) {
     return NextResponse.json({ error: e?.name === "AbortError" ? "Google Sheets request timed out" : (e?.message || "Unable to reach Google Sheets") }, { status: 502 });
   } finally { clearTimeout(timer); }
