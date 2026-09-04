@@ -40,7 +40,7 @@ const EXPECTED = {
 function findHeaderIndex(rows, tab) {
   const wanted = EXPECTED[tab] || [];
   let best = 0, bestScore = -1;
-  for (let i = 0; i < Math.min(rows.length, 30); i++) {
+  for (let i = 0; i < Math.min(rows.length, 50); i++) {
     const cells = rows[i].map(norm).filter(Boolean);
     if (!cells.length) continue;
     let score = 0;
@@ -48,6 +48,7 @@ function findHeaderIndex(rows, tab) {
       const n = norm(w);
       if (cells.some(c => c === n || c.includes(n) || n.includes(c))) score += 3;
     }
+    if (tab === "For Hearing Entry" && cells.some(c => c === "old p s no")) score += 2;
     score += Math.min(cells.length / 20, 0.9);
     if (score > bestScore) { bestScore = score; best = i; }
   }
@@ -64,9 +65,9 @@ function makeUniqueHeaders(headers) {
   });
 }
 
-function isPS(value) {
+function psValue(value) {
   const n = Number(String(value ?? "").trim().replace(/,/g, ""));
-  return Number.isInteger(n) && n >= 1 && n <= 430;
+  return Number.isInteger(n) && n >= 1 && n <= 430 ? n : 0;
 }
 
 function objectFromRow(cols, row) {
@@ -90,15 +91,39 @@ export async function GET(req) {
     const headerIndex = findHeaderIndex(rows, tab);
     const cols = makeUniqueHeaders(rows[headerIndex]);
     const normalizedCols = cols.map(norm);
-    const psIndex = normalizedCols.findIndex(x => x === "new p s no" || x.includes("new p s no"));
+    let psIndex = normalizedCols.findIndex(x => x === "new p s no" || x.includes("new p s no"));
 
     let data = rows.slice(headerIndex + 1).map(r => objectFromRow(cols, r));
 
     if (tab === "For Hearing Entry") {
-      // Google Sheets CSV can shift leading empty cells between exports. Never assume a fixed PS column.
-      data = rows.slice(headerIndex + 1)
-        .filter(r => psIndex >= 0 && isPS(r[psIndex]))
-        .map(r => objectFromRow(cols, r));
+      // Never depend on the exact exported CSV position. In this sheet the PS column is
+      // normally column C, but Google Sheets exports can shift blank leading columns.
+      data = rows.slice(headerIndex + 1).flatMap(r => {
+        let n = psIndex >= 0 ? psValue(r[psIndex]) : 0;
+        if (!n) {
+          // Prefer the column immediately after Old P.S. No.; otherwise find the first
+          // standalone integer in the row. The cumulative PS text in column A is ignored.
+          const oldIdx = normalizedCols.findIndex(x => x === "old p s no" || x.includes("old p s no"));
+          if (oldIdx >= 0) {
+            for (let i = oldIdx + 1; i < Math.min(r.length, oldIdx + 4); i++) {
+              const candidate = psValue(r[i]);
+              if (candidate) { n = candidate; break; }
+            }
+          }
+          if (!n) {
+            for (let i = 0; i < r.length; i++) {
+              const candidate = psValue(r[i]);
+              if (candidate) { n = candidate; psIndex = i; break; }
+            }
+          }
+        }
+        if (!n) return [];
+        const obj = objectFromRow(cols, r);
+        // Canonical key makes the client independent of any CSV/header quirks.
+        obj[cols[psIndex] || "New P.S. No."] = String(n);
+        obj["New P.S. No."] = String(n);
+        return [obj];
+      });
     }
 
     return NextResponse.json(
