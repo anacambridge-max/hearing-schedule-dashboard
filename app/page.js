@@ -9,17 +9,11 @@ const money = (n) => Number(n || 0).toLocaleString('en-IN');
 const clean = (v) => (v == null ? '' : String(v).trim());
 const num = (v) => { const n = parseFloat(String(v ?? '').replace(/,/g, '')); return Number.isFinite(n) ? n : 0; };
 
-function parseGviz(text) {
-  const start = text.indexOf('{'), end = text.lastIndexOf('}');
-  if (start < 0 || end < 0) throw new Error('Invalid Google Sheets response');
-  const obj = JSON.parse(text.slice(start, end + 1));
-  const cols = obj.table.cols.map((c, i) => c.label || `Column ${i + 1}`);
-  return { cols, rows: obj.table.rows.map(r => Object.fromEntries(cols.map((c, i) => [c, r.c?.[i]?.v ?? '']))) };
-}
 async function getTab(tab) {
   const r = await fetch(`/api/sheet?tab=${encodeURIComponent(tab)}`, { cache: 'no-store' });
-  if (!r.ok) throw new Error(await r.text());
-  return parseGviz(await r.text());
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(body.error || `Unable to load ${tab}`);
+  return body;
 }
 function Card({ label, value, sub }) { return <div className="card"><div className="card-label">{label}</div><div className="card-value">{value}</div><div className="card-sub">{sub}</div></div>; }
 
