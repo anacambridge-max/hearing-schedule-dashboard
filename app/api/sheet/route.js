@@ -15,33 +15,35 @@ function parseCSV(text) {
     } else if ((ch === '\n' || ch === '\r') && !quoted) {
       if (ch === '\r' && next === '\n') i++;
       row.push(cell); cell = "";
-      if (row.some(v => v.trim() !== "")) rows.push(row);
+      if (row.some(v => String(v).trim() !== "")) rows.push(row);
       row = [];
     } else cell += ch;
   }
   if (cell !== "" || row.length) {
     row.push(cell);
-    if (row.some(v => v.trim() !== "")) rows.push(row);
+    if (row.some(v => String(v).trim() !== "")) rows.push(row);
   }
   return rows;
 }
 
-function findHeaderRow(rows) {
-  const candidates = ["new p.s. no.", "hearing centre", "sr. no.", "total hearing scheduled"];
-  let best = -1, bestScore = -1;
-  rows.slice(0, 12).forEach((row, index) => {
-    const text = row.map(v => String(v || "").trim().toLowerCase());
-    const nonEmpty = text.filter(Boolean).length;
-    const score = candidates.reduce((s, key) => s + (text.includes(key) ? 10 : 0), 0) + Math.min(nonEmpty, 12) / 100;
-    if (score > bestScore) { bestScore = score; best = index; }
-  });
-  return best >= 0 ? best : 0;
+// These workbooks intentionally have title/instruction rows above the real headers.
+// Keep the source structure stable instead of guessing from data values.
+const HEADER_ROWS = {
+  "Rough Data": 1,                 // Excel row 2
+  "For Hearing Entry": 1,         // Excel row 2
+  "Centre Wise Report": 2,        // Excel row 3
+  "Hearing Schedule Report": 2,   // Excel row 3
+  "Date wise Report": 2            // Excel row 3
+};
+
+function normalizeHeader(v) {
+  return String(v ?? "").replace(/^\uFEFF/, "").trim();
 }
 
 function makeUniqueHeaders(headers) {
   const used = new Map();
   return headers.map((value, i) => {
-    const base = String(value || "").trim() || `Column ${i + 1}`;
+    const base = normalizeHeader(value) || `Column ${i + 1}`;
     const count = used.get(base) || 0;
     used.set(base, count + 1);
     return count ? `${base} (${count + 1})` : base;
@@ -67,11 +69,11 @@ export async function GET(req) {
     const rows = parseCSV(await r.text());
     if (!rows.length) return NextResponse.json({ cols: [], rows: [] });
 
-    const headerIndex = findHeaderRow(rows);
+    const headerIndex = Math.min(HEADER_ROWS[tab] ?? 0, rows.length - 1);
     const cols = makeUniqueHeaders(rows[headerIndex]);
     const data = rows.slice(headerIndex + 1).map(r => {
       const obj = {};
-      cols.forEach((c, i) => { obj[c] = r[i] ?? ""; });
+      cols.forEach((c, i) => { obj[c] = normalizeHeader(r[i] ?? ""); });
       return obj;
     });
 
