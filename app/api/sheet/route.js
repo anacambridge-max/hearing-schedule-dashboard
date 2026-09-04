@@ -30,8 +30,8 @@ function norm(v) {
 }
 
 const EXPECTED = {
-  "Rough Data": ["p s", "grand total"],
-  "For Hearing Entry": ["p s", "hearing centre", "grand total"],
+  "Rough Data": ["new p s no", "grand total"],
+  "For Hearing Entry": ["new p s no", "grand total"],
   "Centre Wise Report": ["hearing centre", "total notice scheduled"],
   "Hearing Schedule Report": ["date", "total hearing scheduled"],
   "Date wise Report": ["date", "hearing centre"]
@@ -40,7 +40,7 @@ const EXPECTED = {
 function findHeaderIndex(rows, tab) {
   const wanted = EXPECTED[tab] || [];
   let best = 0, bestScore = -1;
-  for (let i = 0; i < Math.min(rows.length, 15); i++) {
+  for (let i = 0; i < Math.min(rows.length, 20); i++) {
     const cells = rows[i].map(norm).filter(Boolean);
     if (!cells.length) continue;
     let score = 0;
@@ -64,6 +64,11 @@ function makeUniqueHeaders(headers) {
   });
 }
 
+function isPS(value) {
+  const n = Number(String(value ?? "").trim());
+  return Number.isInteger(n) && n >= 1 && n <= 430;
+}
+
 export async function GET(req) {
   const tab = new URL(req.url).searchParams.get("tab");
   if (!tab) return NextResponse.json({ error: "Missing tab" }, { status: 400 });
@@ -75,14 +80,28 @@ export async function GET(req) {
     if (!r.ok) return NextResponse.json({ error: `Google Sheets returned ${r.status}` }, { status: 502 });
     const rows = parseCSV(await r.text());
     if (!rows.length) return NextResponse.json({ cols: [], rows: [] });
+
     const headerIndex = findHeaderIndex(rows, tab);
     const cols = makeUniqueHeaders(rows[headerIndex]);
-    const data = rows.slice(headerIndex + 1).map(r => {
-      const obj = {};
-      cols.forEach((c, i) => { obj[c] = String(r[i] ?? "").replace(/^\uFEFF/, "").trim(); });
-      return obj;
-    });
-    return NextResponse.json({ cols, rows: data, headerIndex }, { headers: { "Cache-Control": "no-store, max-age=0" } });
+    let data;
+
+    if (tab === "For Hearing Entry") {
+      // This tab contains repeated header blocks for different hearing centres.
+      // Use the first real header definition and collect every row whose New P.S. No. is 1..430.
+      data = rows.slice(headerIndex + 1).filter(r => isPS(r[2])).map(r => {
+        const obj = {};
+        cols.forEach((c, i) => { obj[c] = String(r[i] ?? "").replace(/^\uFEFF/, "").trim(); });
+        return obj;
+      });
+    } else {
+      data = rows.slice(headerIndex + 1).map(r => {
+        const obj = {};
+        cols.forEach((c, i) => { obj[c] = String(r[i] ?? "").replace(/^\uFEFF/, "").trim(); });
+        return obj;
+      });
+    }
+
+    return NextResponse.json({ cols, rows: data, headerIndex, count: data.length }, { headers: { "Cache-Control": "no-store, max-age=0" } });
   } catch (e) {
     return NextResponse.json({ error: e?.name === "AbortError" ? "Google Sheets request timed out" : (e?.message || "Unable to reach Google Sheets") }, { status: 502 });
   } finally { clearTimeout(timer); }
